@@ -15,8 +15,8 @@ export async function POST(request: NextRequest) {
 		// Generate embedding for the question
 		const queryVector = await embed(question);
 
-		// Search for similar chunks in Qdrant
-		const sources = await searchChunks(queryVector, top_k, 0.7);
+		// Search for similar chunks in Qdrant (threshold 0.4 para cosine similarity con textos cortos)
+		const sources = await searchChunks(queryVector, top_k, 0.4);
 
 		if (sources.length === 0) {
 			const response: QueryResponse = {

@@ -1,0 +1,12 @@
+# OpenSpec Configuration
+version: "1.0"
+sdd:
+  execution_mode: "auto"
+  artifact_store: "openspec"
+  review_budget_lines: 400
+  strict_tdd: false
+project:
+  name: "adminbasedatos"
+  domain: "RAG System con Qdrant"
+  language: "es"
+  deadline: "2026-06-11"

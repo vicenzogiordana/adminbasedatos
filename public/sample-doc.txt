@@ -1,0 +1,41 @@
+# Sistema RAG con Qdrant y Ollama
+
+## Introducción
+
+Este documento describe la arquitectura y funcionamiento de un sistema RAG (Retrieval-Augmented Generation) implementado con Qdrant como base de datos vectorial y Ollama para la generación de embeddings y respuestas.
+
+## Componentes Principales
+
+### Qdrant
+Qdrant es una base de datos vectorial de alto rendimiento diseñada para aplicaciones de búsqueda por similitud y sistemas de recomendación. Sus características principales incluyen:
+
+- **Almacenamiento eficiente de vectores**: Qdrant utiliza estructuras de datos optimizadas para el almacenamiento y búsqueda de embeddings de alta dimensionalidad.
+- **Indexación HNSW**: El algoritmo Hierarchical Navigable Small World permite búsquedas aproximadas por vecindad más cercana con complejidad sub-lineal.
+- **Filtrado por payloads**: Permite combinar búsquedas vectoriales con filtrado estructurado sobre metadatos.
+
+### Ollama
+Ollama es una plataforma local para ejecutar modelos de lenguaje grandes y modelos de embedding:
+
+- **nomic-embed-text**: Modelo especializado en generar representaciones vectoriales de texto.
+- **llama3**: Modelo de lenguaje para generación de respuestas contextuales.
+
+## Flujo de Funcionamiento
+
+### 1. Ingesta de Documentos
+El proceso de ingesta sigue estos pasos:
+1. El documento se fragmenta en chunks de texto (típicamente 512 tokens).
+2. Cada chunk se procesa con el modelo de embedding para generar un vector de 768 dimensiones.
+3. Los vectores y sus payloads asociados se almacenan en Qdrant.
+
+### 2. Consulta RAG
+Cuando un usuario realiza una pregunta:
+1. La pregunta se convierte en vector usando el mismo modelo de embedding.
+2. Qdrant realiza una búsqueda por similitud coseno para encontrar los chunks más relevantes.
+3. Los chunks recuperados se concatenan como contexto.
+4. El LLM genera una respuesta basada en el contexto proporcionado.
+
+## Beneficios del Sistema
+
+- **Privacidad**: Todo el procesamiento ocurre localmente, sin enviar datos a servicios externos.
+- **Velocidad**: Los embeddings locales y la indexación HNSW permiten respuestas en tiempo real.
+- **Precisión**: La búsqueda vectorial captura relaciones semánticas que métodos basados en palabras clave no pueden detectar.

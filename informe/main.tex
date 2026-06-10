@@ -319,7 +319,7 @@ La arquitectura de Qdrant se compone de cuatro módulos principales que interact
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.45\textwidth]{qdrant_architecture.png}
+    \includegraphics[width=0.45\textwidth]{images/fig1_arquitectura.png}
     \caption{Arquitectura de Qdrant: componentes principales y flujo de datos}
     \label{fig:architecture}
 \end{figure}
@@ -440,6 +440,13 @@ El archivo de índice HNSW contiene:
 \end{equation}
 donde $n$ es el número de puntos y $m$ es el número de conexiones por nodo.
 
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.45\textwidth]{images/fig5_hnsw.png}
+    \caption{Estructura jerárquica del índice HNSW: múltiples capas con diferente densidad de nodos}
+    \label{fig:hnsw_structure}
+\end{figure}
+
 \subsection{C. Recuperación y durabilidad de datos}
 
 Qdrant implementa múltiples mecanismos para garantizar la integridad y disponibilidad de los datos.
@@ -491,7 +498,7 @@ La rotación del WAL ocurre cuando se alcanza el límite de tamaño o se complet
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.4\textwidth]{wal_flow.png}
+    \includegraphics[width=0.45\textwidth]{images/fig2_wal_flow.png}
     \caption{Flujo de datos: WAL y segmentos}
     \label{fig:wal_flow}
 \end{figure}
@@ -552,7 +559,7 @@ La separación entre writers y readers permite que las búsquedas no se bloqueen
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.4\textwidth]{concurrency_model.png}
+    \includegraphics[width=0.45\textwidth]{images/fig3_concurrencia.png}
     \caption{Modelo de concurrencia de Qdrant}
     \label{fig:concurrency}
 \end{figure}
@@ -599,7 +606,7 @@ En deployments distribuidos, Qdrant utiliza el algoritmo Raft para consenso:
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.4\textwidth]{raft_consensus.png}
+    \includegraphics[width=0.45\textwidth]{images/fig4_raft.png}
     \caption{Consenso Raft en Qdrant distribuido}
     \label{fig:raft}
 \end{figure}
@@ -847,7 +854,7 @@ export async function searchChunks(
 \end{lstlisting}
 
 % Biography
-\begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{placeholder.png}}]{Vicenzo Giordano}
+\begin{IEEEbiography}{Vicenzo Giordano}
 Estudiante de Ingeniería, Universidad. Áreas de interés: bases de datos, sistemas distribuidos, inteligencia artificial.
 \end{IEEEbiography}
 

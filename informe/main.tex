@@ -40,7 +40,7 @@
 \begin{document}
 
 % Title
-\title{Sistema de Retrieval-Augmented Generation\\Utilizando Qdrant y Ollama\\[2mm]
+\title{Qdrant: Base de Datos Vectorial de Alto Rendimiento para Búsqueda Semántica\\[2mm]
 {\large Trabajo Práctico Integrador -- Administración de Bases de Datos}}
 
 % Authors
@@ -55,629 +55,746 @@
 
 % Abstract
 \begin{abstract}
-Este trabajo presenta el diseño e implementación de un sistema de Retrieval-Augmented Generation (RAG) que demuestra las capacidades avanzadas de las bases de datos vectoriales en aplicaciones de recuperación de información semántica. El sistema utiliza Qdrant como base de datos vectorial para el almacenamiento y búsqueda eficiente de embeddings de alta dimensionalidad, mientras que Ollama proporciona modelos de lenguaje grandes locales para la generación de respuestas contextuales. Se documentan en profundidad los internos de Qdrant, incluyendo: el algoritmo de indexación HNSW (Hierarchical Navigable Small World) para búsqueda aproximada por vecindad más cercana; el Write-Ahead Log (WAL) para garantizar durabilidad de transacciones; la arquitectura de segmentos con memory mapping (mmap) para manejo eficiente de datos grandes; y los mecanismos de concurrencia y filtrado por payload. Los resultados demuestran que la combinación de estas técnicas permite construir sistemas RAG de alto rendimiento con inferencia completamente local.
+El auge de la inteligencia artificial generativa y los modelos de lenguaje grandes ha impulsado la adopción de bases de datos vectoriales como infraestructura fundamental para la búsqueda semántica y los sistemas de Retrieval-Augmented Generation (RAG). Qdrant emerge como una solución de código abierto que combina rendimiento en búsquedas aproximadas por vecindad con garantías de durabilidad y flexibilidad en el filtrado de resultados. Este trabajo documenta la arquitectura interna de Qdrant, incluyendo el algoritmo de indexación HNSW, el Write-Ahead Log para recuperación ante fallos, la organización de segmentos con memory mapping, y los mecanismos de concurrencia. A partir de la experiencia práctica con un sistema RAG implementado, se presenta un análisis crítico de las fortalezas, limitaciones y casos de uso de esta tecnología.
 \end{abstract}
 
 % Keywords
 \begin{IEEEkeywords}
-RAG, Qdrant, Ollama, HNSW, WAL, base de datos vectorial, embeddings, búsqueda semántica, sistema de recuperación
+Qdrant, base de datos vectorial, HNSW, embeddings, búsqueda semántica, RAG,相似性搜索
 \end{IEEEkeywords}
 
 % Generate title
 \maketitle
 
-% Section: Introducción
+% ============================================================
+% I. INTRODUCCIÓN
+% ============================================================
 \section{Introducción}
 \label{sec:introduccion}
 
-\subsection{Contexto y Motivación}
-Las bases de datos tradicionales fueron diseñadas para almacenar y consultar datos estructurados con esquemas bien definidos. Sin embargo, el crecimiento exponencial de datos no estructurados (texto, imágenes, audio) ha generado la necesidad de nuevas soluciones. Las bases de datos vectoriales~\cite{qdrant_docs}emergen como respuesta a este desafío, permitiendo representar información no estructurada como vectores numéricos en espacios de alta dimensionalidad.
+El panorama de la inteligencia artificial ha experimentado una transformación radical con la proliferación de modelos de lenguaje grandes (LLMs) capaces de generar texto, traducir idiomas, resumir documentos y mantener conversaciones naturales. Sin embargo, estos modelos presentan limitaciones conocidas: tienden a ``alucinar'' información incorrecta, no pueden acceder a datos actualizados en tiempo real, y carecen de mecanismos nativos para referenciar fuentes específicas.
 
-La búsqueda por similitud en estos espacios permite encontrar documentos, imágenes o conceptos relacionados semánticamente, superando las limitaciones de las búsquedas por palabras clave tradicionales.
+La técnica de Retrieval-Augmented Generation (RAG) surge como respuesta a estas limitaciones, permitiendo que los LLMs consulten bases de conocimiento externas antes de generar respuestas. El componente crítico de estos sistemas es la base de datos vectorial, que almacena representaciones numéricas (embeddings) de documentos, imágenes o cualquier dato no estructurado, habilitando búsquedas por similitud semántica en espacios de alta dimensionalidad.
 
-\subsection{Retrieval-Augmented Generation (RAG)}
-RAG es un paradigma que combina la recuperación de información con la generación de texto. A diferencia de los modelos de lenguaje puro, RAG permite:
+\subsection{El problema de la búsqueda tradicional}
+
+Las bases de datos relacionales tradicionales fueron diseñadas para almacenar y consultar datos estructurados mediante lenguajes como SQL. Su modelo de indexación (B-trees, hash tables) resulta óptimo para búsquedas exactas por clave primaria o por valores exactos de campos. Sin embargo, presenta limitaciones severas cuando se trata de:
+
 \begin{itemize}
-    \item Referenciar fuentes específicas en las respuestas
-    \item Reducir alucinaciones al basarse en documentos reales
-    \item Mantener los datos localmente sin depender de APIs externas
-    \item Actualizar el conocimiento sin reentrenar modelos
+    \item \textbf{Búsqueda por similitud semántica}: no existe forma directa de expresar ``buscar documentos similares a X'' en SQL
+    \item \textbf{Datos no estructurados}: texto libre, imágenes, audio no encajan en esquemas rígidos
+    \item \textbf{Escalabilidad en dimensionalidad}: los índices tradicionales degradan dramáticamente con vectores de miles de dimensiones
 \end{itemize}
 
-\subsection{Objetivos del Trabajo}
-El presente trabajo tiene como objetivo:
-\begin{enumerate}
-    \item Implementar un sistema RAG funcional utilizando tecnologías de código abierto
-    \item Documentar los mecanismos internos de Qdrant como base de datos vectorial
-    \item Demostrar la integración de embeddings locales con LLMs locales
-    \item Analizar el rendimiento de las técnicas de indexación y almacenamiento
-\end{enumerate}
+\subsection{Embeddings y representación vectorial}
 
-% Section: Marco Teórico
-\section{Marco Teórico}
-\label{sec:marco}
-
-\subsection{Bases de Datos Vectoriales}
-Una base de datos vectorial es un sistema especializado en almacenar y buscar vectores de alta dimensionalidad. A diferencia de las bases de datos relacionales que usan índices B-tree o hash, las vectoriales utilizan estructuras como HNSW, IVF o ANNG para optimizar búsquedas por similitud.
-
-\subsubsection{Embeddings}
-Los embeddings son representaciones numéricas de datos en un espacio vectorial continuo. Se generan mediante modelos de deep learning especializados (como nomic-embed-text, BERT o CLIP) que capturan relaciones semánticas:
+La representación vectorial de datos resuelve estos problemas mediante embeddings: transformaciones de información no estructurada en vectores numéricos en espacios continuos de alta dimensionalidad. Modelos especializados como nomic-embed-text, BERT o CLIP capturan relaciones semánticas en las coordenadas vectoriales:
 
 \begin{equation}
-    \text{embed}(``gato'') \approx \text{embed}(``felino'') > \text{embed}(``coche``)}
-    \label{eq:embeddings}
+    \text{sim}(\text{embed}("gato"), \text{embed}("felino")) > \text{sim}(\text{embed}("gato"), \text{embed}("coche"}))
+    \label{eq:semantic_similarity}
 \end{equation}
 
-\subsubsection{Similitud Coseno}
-La similitud coseno mide el ángulo entre dos vectores, siendo invariante a su magnitud:
-\begin{equation}
-    \text{sim}(A, B) = \frac{A \cdot B}{\|A\| \cdot \|B\|} = \frac{\sum_{i=1}^{n} a_i b_i}{\sqrt{\sum_{i=1}^{n} a_i^2} \cdot \sqrt{\sum_{i=1}^{n} b_i^2}}
-    \label{eq:cosine}
-\end{equation}
-donde el resultado oscila entre -1 (vectores opuestos) y 1 (vectores idénticos).
+Esta propiedad permite encontrar contenido relacionado basándose en significado, no en palabras exactas.
 
-\subsection{Arquitectura RAG}
-El flujo completo de un sistema RAG comprende:
+\subsection{Qdrant como solución}
 
-\begin{enumerate}
-    \item \textbf{Preparación del documento}: fragmentación en chunks manejables
-    \item \textbf{Embedding}: conversión de chunks a vectores mediante modelos especializados
-    \item \textbf{Indexación}: almacenamiento en la base de datos vectorial con metadatos
-    \item \textbf{Recuperación}: búsqueda de chunks similares al query del usuario
-    \item \textbf{Generación}: construcción de prompt con contexto y respuesta del LLM
-\end{enumerate}
-
-% Section: Arquitectura de Qdrant
-\section{Arquitectura de Qdrant}
-\label{sec:arquitectura}
-
-Qdrant es una base de datos vectorial de código abierto escrita en Rust que enfatiza rendimiento, confiabilidad y facilidad de uso.
-
-\subsection{Modelo de Datos}
-Qdrant organiza los datos jerárquicamente:
+Qdrant~\cite{qdrant_docs} es una base de datos vectorial de código abierto escrita en Rust que aborda específicamente las necesidades de aplicaciones modernas de IA. Diseñado desde cero para rendimiento y confiabilidad, ofrece:
 
 \begin{itemize}
-    \item \textbf{Tenant}: grupo aislable de recursos (opcional)
-    \item \textbf{Collection}: contenedor de vectores con configuración de indexación compartida
-    \item \textbf{Point}: unidad fundamental consistente en:
-    \begin{itemize}
-        \item \code{id}: identificador único
-        \item \code{vector}: coordenadas en espacio n-dimensional
-        \item \code{payload}: diccionario de pares clave-valor con metadatos
-    \end{itemize}
-    \item \textbf{Segment}: archivo de almacenamiento que agrupa points
+    \item Implementación optimizada del algoritmo HNSW para búsquedas aproximadas por vecindad más cercana
+    \item Write-Ahead Log para garantizar durabilidad de operaciones
+    \item Arquitectura de segmentos con soporte para memory mapping
+    \item Filtrado avanzado por payloads combinado con búsquedas vectoriales
+    \item API REST y gRPC de alto rendimiento
+    \item Despliegue simple mediante Docker
 \end{itemize}
 
-\subsection{Configuración de Collection}
-La configuración de una collection define el comportamiento del sistema:
+\subsection{Objetivo del informe}
 
-\begin{lstlisting}[language=json, caption={Configuración de collection en Qdrant}, label={lst:collection_config}]
-{
-    "vectors": {
-        "size": 768,
-        "distance": "Cosine"
-    },
-    "hnsw_config": {
-        "m": 16,
-        "ef_construct": 100,
-        "full_scan_threshold": 10000,
-        "on_disk": false
-    },
-    "wal_config": {
-        "wal_capacity_mb": 32,
-        "wal_segments_ahead": 0
-    },
-    "optimizers_config": {
-        "indexing_threshold": 20000,
-        "memmap_threshold": 50000,
-        "flush_interval_sec": 5
-    }
-}
-\end{lstlisting}
+El presente trabajo tiene como objetivo documentar la arquitectura interna de Qdrant y evaluar su funcionamiento a través de la implementación de un sistema RAG completo. Se espera que el análisis proporcione una comprensión profunda de cómo las bases de datos vectoriales abordan problemas que las soluciones tradicionales no pueden resolver eficientemente.
 
-Los parámetros principales son:
-\begin{itemize}
-    \item \param{size}: dimensionalidad de los vectores (768 para nomic-embed-text)
-    \item \param{distance}: métrica de similitud (Cosine, Euclidean, Dot)
-    \item \param{m}: conexiones por nodo en HNSW
-    \item \param{ef\_construct}: tamaño de cola en construcción
-\end{itemize}
+% ============================================================
+% II. DESCRIPCIÓN
+% ============================================================
+\section{Descripción de Qdrant}
+\label{sec:descripcion}
 
-% Section: Algoritmo HNSW
-\section{Algoritmo HNSW}
-\label{sec:hnsw}
+\subsection{A. Historia y evolución}
 
-\subsection{Conceptos Fundamentales}
-Hierarchical Navigable Small World (HNSW)~\cite{malkov2014} es un algoritmo de búsqueda aproximada por vecindad más cercana (ANN) que construye un grafo multi-nivel probabilístico.
+Qdrant fue creado en 2021 por el equipo de Qdrant Solutions GmbH, una empresa fundada con el objetivo de proporcionar una solución de base de datos vectorial de alto rendimiento. El proyecto surgió de la necesidad de contar con una alternativa de código abierto a los servicios cloud propietarios que dominaban el mercado en ese momento.
 
-\subsubsection{Navigable Small World}
-Un Small World es un grafo donde la distancia típica entre nodos crece polilogarítmicamente con el número de nodos. Esta propiedad permite navegación eficiente mediante greedy walks.
-
-\subsubsection{Jerarquía de Capas}
-HNSW construye un grafo con $L$ niveles, donde:
-\begin{itemize}
-    \item Nivel 0: contiene todos los nodos (máximo detalle)
-    \item Nivel $l$: contiene $n / e^l$ nodos (n = total de nodos)
-    \item Los nodos se asignan aleatoriamente siguiendo distribución exponencial
-\end{itemize}
-
-\subsection{Construcción del Índice}
-El algoritmo de construcción para cada nuevo nodo $q$:
-
-\begin{algorithm}[H]
-\caption{Construcción de HNSW}
-\begin{algorithmic}
-\STATE Elegir $L_q$ según $\exp(-\text{uniform}(0,1))$
-\STATE Insertar $q$ en todas las capas $0 \leq l \leq L_q$
-\FOR{each layer $l$ desde $L_q$ hasta 0}
-    \STATE $C \leftarrow$ nearest neighbors de $q$ en capa $l$ (expandida por贪心)
-    \STATE Conectar $q$ con $m$ nodos más cercanos en $C$
-\ENDFOR
-\end{algorithmic}
-\end{algorithm}
-
-La selección de $L_q$ sigue una distribución exponencial que determina la altura esperada del nodo:
-\begin{equation}
-    P(L_q = l) = \frac{1}{e} \cdot \left(\frac{1}{e}\right)^l
-    \label{eq:layer_distribution}
-\end{equation}
-
-\subsection{Búsqueda}
-La búsqueda comienza desde el nodo de entrada en la capa superior y desciende jerárquicamente:
-
-\begin{algorithm}[H]
-\caption{Búsqueda HNSW}
-\begin{algorithmic}
-\STATE $ep \leftarrow$ entry point (nodo superior)
-\STATE $L \leftarrow$ nivel máximo del entry point
-\FOR{$l = L$ hasta 1}
-    \STATE $C \leftarrow$ greedy search con $ef=1$ desde $ep$ en capa $l$
-    \STATE $ep \leftarrow$ mejor candidato en $C$
-\ENDFOR
-\STATE $C \leftarrow$ greedy search con $ef$ desde $ep$ en capa 0
-\STATE \RETURN top-$k$ elementos de $C$
-\end{algorithmic}
-\end{algorithm}
-
-\begin{lstlisting}[language=python, caption={Búsqueda greedy simplificada}, label={lst:greedy}]
-def greedy_search(query, layer, entry, ef=1):
-    visited = {entry}
-    candidates = [(entry, dist(query, entry))]
-    results = []
-    
-    while candidates:
-        _, current = heap.pop(candidates)
-        worst_result = results[-1].dist if results else -inf
-        
-        if dist(query, current) > worst_result and len(results) >= ef:
-            break
-            
-        for neighbor in get_neighbors(current, layer):
-            if neighbor not in visited:
-                visited.add(neighbor)
-                d = dist(query, neighbor)
-                heap.push(candidates, (neighbor, d))
-                if d < worst_result or len(results) < k:
-                    heap.push(results, (neighbor, d))
-    
-    return results
-\end{lstlisting}
-
-\subsection{Complejidad}
 \begin{table}[htbp]
-\caption{Complejidad de HNSW}
-\label{tab:hnsw_complexity}
+\caption{Evolución de Qdrant}
+\label{tab:evolution}
 \begin{center}
-\begin{tabular}{lll}
+\begin{tabular}{cl}
 \toprule
-Operación & Promedio & Peor caso \\
+\textbf{Año} & \textbf{Hito} \\
 \midrule
-Construcción & $O(n \log n)$ & $O(n^2)$ \\
-Búsqueda ($k=1$) & $O(\log n)$ & $O(n)$ \\
-Memoria índice & $O(n \log n)$ & \\
+2021 & Lanzamiento de la primera versión alpha \\
+2022 & Versión 1.0 con soporte para HNSW completo \\
+2023 & Soporte para filtrado avanzado y payloads indexados \\
+2024 & Lanzamiento de Qdrant Cloud y características enterprise \\
+\midrule
+2024 & Soporte para modelos multicanal y búsqueda híbrida \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
 
-\subsection{Parámetros de Rendimiento}
-La relación entre parámetros y rendimiento:
+La adopción de Qdrant ha crecido significativamente, con más de 25,000 estrellas en GitHub y uso en producción por empresas como instance.ai, Mindsoft, y numerosos proyectos de código abierto. La comunidad activa contribuye regularmente con mejoras, correcciones de errores y documentación.
 
-\begin{itemize}
-    \item \param{m} (conexiones): afecta precisión y memoria. Mayor $m$ = mejor precisión, más memoria
-    \item \param{ef\_construct}: afecta calidad del índice. Mayor = mejor pero más lento de construir
-    \item \param{ef} (en búsqueda): trade-off precisión vs velocidad
-\end{itemize}
+\subsection{B. Modelo de datos}
 
-En la implementación se utilizó $m=16$ y $ef\_construct=100$, valores que ofrecen buen balance para datasets de tamaño moderado.
-
-% Section: Write-Ahead Log
-\section{Write-Ahead Log (WAL)}
-\label{sec:wal}
-
-\subsection{Principio de Funcionamiento}
-El Write-Ahead Log es un patrón de durabilidad que garantiza que los cambios no se pierdan incluso ante fallos del sistema. El principio fundamental es:
-
-\begin{quote}
-    ``Antes de modificar datos persistentes, registrar la intención de modificar en un log que se sincronice a disco''
-\end{quote}
-
-\subsection{Operaciones del WAL}
-El WAL de Qdrant registra tres tipos de operaciones:
+Qdrant organiza los datos en una jerarquía de cuatro niveles:
 
 \begin{enumerate}
-    \item \textbf{Insert}: agregar un nuevo punto a la collection
-    \item \textbf{Delete}: marcar un punto como eliminado
-    \item \textbf{Update}: modificar el vector o payload de un punto existente
+    \item \textbf{Tenant (opcional)}: grupo aislable de recursos para multi-tenancy
+    \item \textbf{Collection}: contenedor de vectores con configuración de indexación compartida
+    \item \textbf{Point}: unidad fundamental consistente en vector, payload e identificador
+    \item \textbf{Segment}: archivo de almacenamiento que agrupa points
 \end{enumerate}
 
-Cada operación se codifica como un registro append-only:
+\subsubsection{Colecciones}
+
+Una collection define el esquema de los vectores almacenados:
+
+\begin{itemize}
+    \item \param{size}: dimensionalidad de los vectores (ej: 768 para nomic-embed-text)
+    \item \param{distance}: métrica de similitud para comparaciones
+    \item \param{vectors\_config}: configuración de vectores (múltiples por punto)
+\end{itemize}
+
+\subsubsection{Puntos}
+
+Cada punto contiene:
+\begin{itemize}
+    \item \code{id}: identificador único (numérico o UUID)
+    \item \code{vector}: coordenadas en espacio n-dimensional
+    \item \code{payload}: diccionario de pares clave-valor con metadatos
+    \item \code{shard\_key}: clave para distribución en modo cluster
+\end{itemize}
+
+\begin{lstlisting}[language=json, caption={Estructura de un punto en Qdrant}]
+{
+    "id": 12345,
+    "vector": [0.1, 0.2, 0.3, ...],
+    "payload": {
+        "text": "contenido del documento",
+        "source": "articulo.txt",
+        "timestamp": 1718000000,
+        "tags": ["tecnologia", "ia"]
+    }
+}
+\end{lstlisting}
+
+\subsubsection{Métricas de distancia}
+
+Qdrant soporta tres métricas de similitud:
+
+\begin{itemize}
+    \item \textbf{Cosine}: similitud del ángulo entre vectores
+    \begin{equation}
+        \text{cosine}(A, B) = \frac{A \cdot B}{\|A\| \cdot \|B\|}
+        \label{eq:cosine}
+    \end{equation}
+    \item \textbf{Dot product}: producto punto normalizado
+    \begin{equation}
+        \text{dot}(A, B) = \frac{A \cdot B}{\|A\| \cdot \|B\|}
+        \label{eq:dot}
+    \end{equation}
+    \item \textbf{Euclidean}: distancia euclidiana
+    \begin{equation}
+        \text{euclidean}(A, B) = \sqrt{\sum_{i=1}^{n}(a_i - b_i)^2}
+        \label{eq:euclidean}
+    \end{equation}
+\end{itemize}
+
+La elección de métrica depende del modelo de embedding utilizado y del tipo de datos. Para embeddings normalizados (como nomic-embed-text), la similitud coseno es generalmente la mejor opción.
+
+\subsection{C. Organización desarrolladora}
+
+Qdrant Solutions GmbH es una empresa establecida en Alemania que desarrolla y mantiene el producto Qdrant. La compañía ofrece un modelo de negocio dual:
+
+\begin{itemize}
+    \item \textbf{Versión open source}: disponible gratuitamente bajo licencia Apache 2.0
+    \item \textbf{Qdrant Cloud}: servicio cloud gestionado con SLA y soporte
+    \item \textbf{Qdrant Enterprise}: versión on-premise con características avanzadas
+\end{itemize}
+
+La empresa mantiene una comunidad activa en Discord y GitHub, donde usuarios y desarrolladores pueden obtener ayuda, reportar bugs y contribuir al proyecto.
+
+\subsection{D. Tipo de licencia}
+
+Qdrant se distribuye bajo la licencia \textbf{Apache License 2.0}, una de las licencias open source más permisivas. Esta licencia permite:
+
+\begin{itemize}
+    \item Uso comercial y personal sin restricciones
+    \item Modificación del código fuente
+    \item Distribución de versiones modificadas
+    \item Aplicación de patentes asociadas al software
+\end{itemize}
+
+La licencia Apache 2.0 no requiere que las modificaciones se publiquen como código abierto, aunque se recomienda contribuir a la comunidad.
+
+\begin{table}[htbp]
+\caption{Comparación de ediciones Qdrant}
+\label{tab:editions}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Característica} & \textbf{Open Source} & \textbf{Cloud} & \textbf{Enterprise} \\
+\midrule
+Código fuente & \checkmark & \checkmark & \checkmark \\
+API REST/gRPC & \checkmark & \checkmark & \checkmark \\
+HNSW indexing & \checkmark & \checkmark & \checkmark \\
+Filtrado por payload & \checkmark & \checkmark & \checkmark \\
+Auto-scaling & - & \checkmark & - \\
+SLA garantizado & - & \checkmark & \checkmark \\
+SSO/SAML & - & - & \checkmark \\
+Soporte dedicado & - & Opcional & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{E. Requisitos del sistema}
+
+Qdrant está diseñado para desplegarse principalmente mediante Docker, lo que simplifica significativamente los requisitos de instalación.
+
+\subsubsection{Hardware recomendado}
+
+\begin{itemize}
+    \item \textbf{CPU}: 4+ cores (más cores mejora throughput de búsqueda)
+    \item \textbf{RAM}: 8+ GB (depende del tamaño de la colección y uso de mmap)
+    \item \textbf{Disco}: SSD NVMe recomendado para rendimiento óptimo
+    \item \textbf{Red}: 1 Gbps mínimo para deployments distribuidos
+\end{itemize}
+
+\subsubsection{Sistemas operativos compatibles}
+
+\begin{itemize}
+    \item Linux (Ubuntu 20.04+, Debian 11+, CentOS 8+)
+    \item macOS (Apple Silicon y Intel)
+    \item Windows (mediante WSL2 o Docker Desktop)
+    \item Contenedores: Docker, Podman, Kubernetes
+\end{itemize}
+
+\subsubsection{Docker}
+
+El despliegue mínimo requiere Docker 20.10+:
+
+\begin{lstlisting}[language=bash, caption={Despliegue básico con Docker}]
+docker run -d --name qdrant \
+    -p 6333:6333 \
+    -p 6334:6334 \
+    -v $(pwd)/qdrant_storage:/qdrant/storage \
+    qdrant/qdrant
+\end{lstlisting}
+
+El directorio montado se utiliza para persistir datos en disco.
+
+\subsection{F. Ediciones y limitaciones}
+
+La edición open source de Qdrant presenta las siguientes características y limitaciones:
+
+\begin{itemize}
+    \item \textbf{Funcionalidades ilimitadas}: todas las funcionalidades core están disponibles sin límites en número de colecciones, puntos o dimensiones
+    \item \textbf{Sin límites artificiales}: no hay límites en el tamaño de datos o velocidad de consultas
+    \item \textbf{Configuración completa}: acceso a todos los parámetros de HNSW, WAL y optimizers
+    \item \textbf{No hay gestión automática}: la escalabilidad, backups y monitoreo son responsabilidad del operador
+    \item \textbf{Soporte comunitario}: ayuda disponible a través de GitHub Issues y Discord, sin garantía de tiempo de respuesta
+\end{itemize}
+
+% ============================================================
+% III. ARQUITECTURA Y FUNCIONAMIENTO INTERNO
+% ============================================================
+\section{Arquitectura y Funcionamiento Interno}
+\label{sec:arquitectura}
+
+\subsection{A. Arquitectura del sistema}
+
+La arquitectura de Qdrant se compone de cuatro módulos principales que interactúan para proporcionar un servicio de base de datos vectorial completo y eficiente.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.45\textwidth]{qdrant_architecture.png}
+    \caption{Arquitectura de Qdrant: componentes principales y flujo de datos}
+    \label{fig:architecture}
+\end{figure}
+
+\subsubsection{Capa de API}
+
+Qdrant expone una API dual:
+
+\begin{itemize}
+    \item \textbf{REST API}: accesible en el puerto 6333, proporciona endpoints para CRUD de colecciones, puntos y búsquedas
+    \item \textbf{gRPC API}: accesible en el puerto 6334, ofrece mejor rendimiento para operaciones intensivas
+\end{itemize}
+
+La API REST es preferida para desarrollo y debugging, mientras que gRPC se recomienda para producción con alto throughput.
+
+\begin{lstlisting}[language=bash, caption={Ejemplo de API REST para búsqueda}]
+POST /collections/{name}/points/search
+{
+    "vector": [0.1, 0.2, ...],
+    "limit": 10,
+    "with_payload": true
+}
+\end{lstlisting}
+
+\subsubsection{Motor de búsqueda HNSW}
+
+El motor de búsqueda implementa el algoritmo Hierarchical Navigable Small World (HNSW) para búsquedas aproximadas por vecindad más cercana. Este componente es responsable de:
+
+\begin{itemize}
+    \item Construcción del índice graph durante ingestas
+    \item Búsqueda eficiente de vecinos más cercanos
+    \item Balance entre precisión y velocidad mediante parámetros configurables
+\end{itemize}
+
+El índice HNSW se construye incrementalmente sobre los segmentos inmutables, permitiendo optimización continua sin bloquear operaciones de lectura.
+
+\subsubsection{Gestor de segmentos}
+
+El gestor de segmentos coordina el almacenamiento físico de datos:
+
+\begin{itemize}
+    \item Creación de nuevos segmentos para operaciones de escritura
+    \item Transición de segmentos a estado inmutable para optimización
+    \item Compactación y fusión de segmentos obsoletos
+    \item Aplicación de políticas de memory mapping
+\end{itemize}
+
+Los segmentos son archivos independientes que pueden ser accedidos en paralelo por múltiples threads de búsqueda.
+
+\subsubsection{Capa de almacenamiento}
+
+La capa de almacenamiento maneja la persistencia de datos:
+
+\begin{itemize}
+    \item Escritura de segmentos a disco
+    \item Gestión del Write-Ahead Log
+    \item Creación y restauración de snapshots
+    \item Coordinación de WAL con segmentos para durabilidad
+\end{itemize}
+
+\subsection{B. Modelo de almacenamiento}
+
+Qdrant organiza los datos en disco siguiendo una estructura optimizada para el acceso eficiente y la recuperación ante fallos.
+
+\subsubsection{Estructura de segmentos}
+
+Cada segmento en disco contiene:
+
+\begin{itemize}
+    \item \textbf{Header}: metadatos del segmento (versión, número de puntos, etc.)
+    \item \textbf{Vector data}: coordenadas de vectores en formato binario optimizado
+    \item \textbf{Payload data}: índices y datos de payloads en formato columnar
+    \item \textbf{Index data}: estructuras HNSW para búsqueda vectorial
+    \item \textbf{Field data}: índices secundarios para filtrado
+\end{itemize}
+
+Los segmentos pueden ser de dos tipos:
+
+\begin{enumerate}
+    \item \textbf{Appendable}: acepta nuevas operaciones de escritura
+    \item \textbf{Index}: inmutable, optimizado para búsquedas con índice HNSW completo
+\end{enumerate}
+
+\begin{lstlisting}[caption={Estructura de archivos en disco}]
+storage/
+├── collections/
+│   └── my_collection/
+│       ├── snapshots/
+│       └── segments/
+│           ├── 1234567890_segtemp.dat  # Segmento appendable
+│           └── 1234567891_segindex.dat # Segmento inmutable
+├── wal/
+│   └── 00000.log                       # Write-Ahead Log
+└── tmp/                                # Archivos temporales
+\end{lstlisting}
+
+\subsubsection{Índice HNSW en disco}
+
+El índice HNSW se almacena de forma independiente al vector data, permitiendo:
+
+\begin{itemize}
+    \item Carga perezosa de componentes del índice según necesidad
+    \item Reconstrucción parcial del índice sin reindexar todos los vectores
+    \item Separación de datos calientes (índice en RAM) y fríos (índice en disco)
+\end{itemize}
+
+El archivo de índice HNSW contiene:
+
+\begin{itemize}
+    \item Matriz de adyacencia del grafo (punteros a nodos vecinos)
+    \item Metadata de capas y niveles
+    \item Entry point para búsqueda
+\end{itemize}
+
+\begin{equation}
+    \text{Memoria índice HNSW} = O(n \cdot m \cdot \log n)
+    \label{eq:hnsw_memory}
+\end{equation}
+donde $n$ es el número de puntos y $m$ es el número de conexiones por nodo.
+
+\subsection{C. Recuperación y durabilidad de datos}
+
+Qdrant implementa múltiples mecanismos para garantizar la integridad y disponibilidad de los datos.
+
+\subsubsection{Write-Ahead Log (WAL)}
+
+El WAL es el componente fundamental para la durabilidad en Qdrant. Su principio de funcionamiento es:
+
+\begin{quotation}
+    ``Antes de modificar datos persistentes, registrar la intención de modificar en un log que se sincronice a disco''
+\end{quotation}
+
+El WAL de Qdrant registra tres tipos de operaciones:
+
+\begin{itemize}
+    \item \textbf{INSERT}: agregar nuevos puntos
+    \item \textbf{DELETE}: marcar puntos como eliminados
+    \item \textbf{UPDATE}: modificar vectores o payloads
+\end{itemize}
 
 \begin{lstlisting}[caption={Estructura de registro WAL}]
 struct WALRecord {
     version: u32,           // Versión del formato
-    operation: Operation,   // INSERT | DELETE | UPDATE
+    operation: OpType,      // INSERT | DELETE | UPDATE
+    sequence_num: u64,      // Número de secuencia
     point_id: u64,          // ID del punto
-    vector: Vec<f32>,       // Vector (si aplica)
-    payload: HashMap,       // Metadatos (si aplica)
-    checksum: u32,          // Verificación de integridad
+    vector: Option<Vec<f32>>,// Vector (si aplica)
+    payload: Option<HashMap>,// Payload (si aplica)
+    checksum: u32,          // Verificación CRC32
 }
 \end{lstlisting}
 
-\subsection{Configuración del WAL}
-La configuración permite ajustar el comportamiento del WAL:
+La configuración del WAL permite ajustar el compromiso entre durabilidad y rendimiento:
 
 \begin{itemize}
-    \item \param{wal\_capacity\_mb}: tamaño máximo del WAL antes de rotación. Valor típico: 32MB
-    \item \param{wal\_segments\_ahead}: número de segmentos a escribir por delante
+    \item \param{wal\_capacity\_mb}: tamaño máximo antes de rotación (default: 32MB)
+    \item \param{wal\_segments\_ahead}: segmentos a escribir por delante
 \end{itemize}
 
-La rotación del WAL ocurre cuando:
+La rotación del WAL ocurre cuando se alcanza el límite de tamaño o se completa un checkpoint de consistencia. Una vez que los datos están persistidos en segmentos, el WAL puede truncarse de forma segura.
+
+\begin{enumerate}
+    \item Operaciones se escriben en WAL (append-only)
+    \item WAL se sincroniza a disco (fsync)
+    \item Operaciones se aplican a segmentos
+    \item Segmentos se persisten asíncronamente
+    \item WAL se trunca hasta el checkpoint
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.4\textwidth]{wal_flow.png}
+    \caption{Flujo de datos: WAL y segmentos}
+    \label{fig:wal_flow}
+\end{figure}
+
+\subsubsection{Snapshots}
+
+Qdrant soporta la creación de snapshots para backup y migración:
+
 \begin{itemize}
-    \item Se alcanza el límite de tamaño configurado
-    \item Se completa un checkpoint de consistencia
-    \item Se fuerza manualmente por el optimizador
+    \item Snapshot completo de una colección
+    \item Incluye segmentos, WAL y metadatos
+    \item Compresión opcional para reducir tamaño
+    \item Restauración point-in-time
 \end{itemize}
 
-\subsection{Recuperación ante Fallos}
-En caso de fallo, Qdrant ejecuta el siguiente protocolo de recuperación:
+\begin{lstlisting}[language=bash, caption={Creación de snapshot}]
+# Crear snapshot
+curl -X POST http://localhost:6333/collections/my_collection/snapshots
+
+# Listar snapshots
+curl http://localhost:6333/collections/my_collection/snapshots
+
+# Restaurar desde snapshot
+curl -X PUT http://localhost:6333/collections/my_collection/snapshots/recover \
+    -d '{"location": "s3://bucket/snapshot.snapshot"}'
+\end{lstlisting}
+
+\subsubsection{Recuperación ante fallos}
+
+En caso de fallo del sistema, Qdrant ejecuta el siguiente protocolo de recuperación:
 
 \begin{enumerate}
     \item Leer el WAL desde el último checkpoint conocido
-    \item Reconstruir el estado de la colección iterando los registros
+    \item Reconstruir el estado de todas las colecciones iterando los registros
     \item Verificar consistencia de segmentos existentes
     \item Aplicar las operaciones pendientes del WAL
     \item Truncar el WAL hasta el punto de sincronización
 \end{enumerate}
 
-El tiempo de recuperación es proporcional al tamaño del WAL, no al de la colección completa.
+El tiempo de recuperación es proporcional al tamaño del WAL, no al de la colección completa. Una colección de 10 millones de puntos puede recuperarse en segundos si el WAL es pequeño.
 
-\subsection{Integración con Segments}
-El WAL interactúa con los segmentos de la siguiente manera:
+\subsection{D. Gestión de transacciones y concurrencia}
 
-\begin{enumerate}
-    \item Operaciones nuevas se escriben en el WAL
-    \item Periódicamente, se crea un nuevo segmento con las operaciones pendientes
-    \item El segmento se sincroniza a disco
-    \item Una vez persistido, el WAL puede truncarse
-    \item El proceso se repite continuamente
-\end{enumerate}
+Qdrant implementa un modelo de concurrencia optimizado para workloads de búsqueda vectorial, donde las lecturas superan ampliamente a las escrituras.
 
-Esta arquitectura permite escrituras rápidas (append en WAL) mientras mantiene durabilidad (persistencia asíncrona en segmentos).
+\subsubsection{Modelo de threads}
 
-% Section: Segmentos y mmap
-\section{Segmentos y Memory Mapping}
-\label{sec:segments}
-
-\subsection{Concepto de Segmento}
-Un segmento es la unidad física de almacenamiento en Qdrant. Cada segmento es un archivo independiente que contiene:
+El servidor Qdrant utiliza un pool de threads con la siguiente distribución:
 
 \begin{itemize}
-    \item \textbf{Vector data}: coordenadas de los vectores almacenados
-    \item \textbf{Payload data}: metadatos estructurados en formato JSON
-    \item \textbf{Index data}: estructuras HNSW para búsqueda vectorial
-    \item \textbf{Field data}: índices secundarios para filtrado de payload
+    \item \textbf{API threads}: manejan requests entrantes
+    \item \textbf{Write workers}: procesan operaciones de escritura secuencialmente
+    \item \textbf{Read workers}: ejecutan búsquedas en paralelo
+    \item \textbf{Optimization workers}: compactan y fusionan segmentos
 \end{itemize}
 
-\subsection{Tipos de Segmentos}
-Qdrant utiliza dos tipos de segmentos según su estado:
+La separación entre writers y readers permite que las búsquedas no se bloqueen por escrituras en curso.
 
-\begin{itemize}
-    \item \textbf{Segmento mutable (Appendable)}: acepta nuevas operaciones
-    \item \textbf{Segmento inmutable (Index)}: optimizado para lectura, no acepta inserts
-\end{itemize}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.4\textwidth]{concurrency_model.png}
+    \caption{Modelo de concurrencia de Qdrant}
+    \label{fig:concurrency}
+\end{figure}
 
-La transición entre estados ocurre durante la optimización:
-\begin{enumerate}
-    \item Segmento mutable acumula operaciones
-    \item Cuando supera el umbral, se crea un nuevo segmento inmutable
-    \item El segmento mutable se convierte en inmutable
-    \item Los segmentos inmutable se compactan y fusionan
-\end{enumerate}
+\subsubsection{Transacciones de escritura}
 
-\subsection{Memory Mapping (mmap)}
-Memory mapping es una técnica que mapea archivos directamente al espacio de direcciones virtuales del proceso. En Qdrant:
-
-\begin{itemize}
-    \item Los segmentos grandes se cargan mediante mmap
-    \item El sistema operativo maneja la paginación automáticamente
-    \item Los datos se cargan bajo demanda (demand paging)
-    \item Se reduce significativamente el uso de memoria RAM
-\end{itemize}
-
-La ventaja principal es poder manejar colecciones que exceden la RAM disponible, con rendimiento aceptable gracias a la locality espacial de las búsquedas.
-
-\begin{lstlisting}[caption={Flujo de mmap en Qdrant}]
-1. Segmento creado en disco
-2. Primer acceso a página -> page fault -> SO carga página
-3. Páginas accedidas -> quedan en RAM (LRU eviction)
-4. Búsquedas-> solo páginas relevantes se cargan
-5. Memoria libre -> caché de páginas -> aceleramiento
-\end{lstlisting}
-
-\subsection{Configuración de Optimizers}
-Los optimizadores controlan cuándo y cómo se procesan los segmentos:
-
-\begin{lstlisting}[language=json, caption={Configuración de optimizers}]
-{
-    "optimizers_config": {
-        "indexing_threshold": 20000,
-        "memmap_threshold": 50000,
-        "flush_interval_sec": 5,
-        "max_segment_size": null,
-        "max_optimization_threads": 1
-    }
-}
-\end{lstlisting}
-
-\begin{itemize}
-    \item \param{indexing\_threshold}: puntos antes de construir índice HNSW
-    \item \param{memmap\_threshold}: límite para usar mmap en lugar de cargar en RAM
-    \item \param{flush\_interval\_sec}: intervalo entre sincronizaciones a disco
-\end{itemize}
-
-% Section: Concurrencia y Filtrado
-\section{Concurrencia y Filtrado por Payload}
-\label{sec:concurrencia}
-
-\subsection{Modelo de Concurrencia}
-Qdrant utiliza un modelo multi-threaded con las siguientes características:
-
-\begin{itemize}
-    \item \textbf{Writer threads}: procesan actualizaciones de forma secuencial para evitar conflictos
-    \item \textbf{Reader threads}: permiten búsquedas paralelas sin bloqueo
-    \item \textbf{Segment locks}: protección granular a nivel de segmento
-    \item \textbf{Reader-Writer locks}: para recursos compartidos
-\end{itemize}
-
-\subsection{Arquitectura de Transacciones}
 Las operaciones de escritura siguen este flujo:
 
 \begin{enumerate}
-    \item Operación llega al thread de coordinación
-    \item Se registra en el WAL (durabilidad)
-    \item Se marca el segmento como ``en modificación''
+    \item Request llega al thread API
+    \item Se valida y se registra en el WAL (durabilidad garantizada)
+    \item Se adquiere lock del segmento destino
     \item Se aplica la operación al segmento
-    \item Se libera el lock del segmento
+    \item Se libera el lock
     \item Se confirma la operación al cliente
 \end{enumerate}
 
-Las operaciones de lectura pueden ejecutarse en paralelo:
+El WAL proporciona durability antes de que los datos sean aplicados a segmentos. Esto significa que incluso si el proceso falla antes de aplicar al segmento, los datos se recuperan del WAL al reiniciar.
+
+\subsubsection{Lecturas concurrentes}
+
+Las búsquedas pueden ejecutarse en paralelo sobre múltiples segmentos:
 
 \begin{enumerate}
-    \item Query llega a cualquier thread disponible
-    \item Se replica la búsqueda en todos los segmentos relevantes
-    \item Se fusionan los resultados parciales
+    \item Query llega a cualquier thread API disponible
+    \item Se divide la búsqueda en subtareas por segmento
+    \item Read workers ejecutan búsquedas en paralelo
+    \item Se fusionan y ordenan los resultados parciales
     \item Se devuelve el resultado consolidado
 \end{enumerate}
 
-\subsection{Filtrado por Payload}
-El filtrado permite combinar búsquedas vectoriales con condiciones sobre metadatos:
+Los segmentos inmutables pueden ser accedidos concurrentemente sin sincronización, ya que no se modifican durante las búsquedas.
 
-\begin{lstlisting}[language=json, caption={Ejemplo de búsqueda con filtrado}, label={lst:filter}]
-POST /collections/rag_collection/points/search
-{
-    "vector": [0.1, 0.2, ...],
-    "limit": 10,
-    "score_threshold": 0.7,
-    "filter": {
-        "must": [
-            {"key": "source", "match": {"value": "document.txt"}},
-            {"key": "chunk_id", "range": {"gte": 0, "lte": 10}}
-        ],
-        "should": [
-            {"key": "category", "match": {"value": "tecnico"}}
-        ]
-    },
-    "with_payload": ["text", "source"]
-}
-\end{lstlisting}
+\subsubsection{Modo distribuido (Raft)}
 
-\subsection{Tipos de Condiciones}
-Qdrant soporta múltiples tipos de condiciones:
+En deployments distribuidos, Qdrant utiliza el algoritmo Raft para consenso:
 
 \begin{itemize}
-    \item \textbf{Match}: igualdad exacta de valor
-    \item \textbf{Range}: comparaciones numéricas (gte, gt, lte, lt)
-    \item \textbf{ValuesCount}: número de valores en array
-    \item \textbf{Nested}: condiciones sobre objetos anidados
-    \item \textbf{FullText}: búsqueda de texto completo
-    \item \textbf{IsNull/IsEmpty}: verificar ausencia o presencia
+    \item Un líder acepta todas las escrituras
+    \item Réplicas aplican operaciones en el mismo orden
+    \item Failover automático si el líder falla
+    \item Lecturas pueden servirse desde cualquier nodo (eventual consistency)
 \end{itemize}
 
-\subsection{Estrategias de Filtrado}
-El filtrado puede ejecutarse en diferentes momentos:
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.4\textwidth]{raft_consensus.png}
+    \caption{Consenso Raft en Qdrant distribuido}
+    \label{fig:raft}
+\end{figure}
+
+% ============================================================
+% IV. VENTAJAS, LIMITACIONES Y ESCENARIOS DE USO
+% ============================================================
+\section{Ventajas, Limitaciones y Escenarios de Uso}
+\label{sec:ventajas}
+
+\subsection{A. Fortalezas técnicas}
+
+Qdrant presenta múltiples fortalezas que lo distinguen en el ecosistema de bases de datos vectoriales:
 
 \begin{enumerate}
-    \item \textbf{Pre-filter}: aplica condiciones ANTES de búsqueda vectorial
+    \item \textbf{Rendimiento excepcional}: la implementación en Rust proporciona baja latencia y alto throughput. Las búsquedas HNSW típicamente completan en menos de 10ms para colecciones de millones de puntos.
+    
+    \item \textbf{Eficiencia de memoria}: el uso de memory mapping permite manejar colecciones que exceden la RAM disponible, con paginación transparente del sistema operativo.
+    
+    \item \textbf{Filtrado avanzado}: la combinación de búsqueda vectorial con filtrado por payload permite consultas complejas que aprovechan tanto semántica como metadatos estructurados.
+    
+    \item \textbf{Durabilidad incorporada}: el WAL integrado proporciona garantías de consistencia sin necesidad de configuración adicional.
+    
+    \item \textbf{Despliegue simple}: la imagen Docker oficial permite poner en marcha un servidor funcional en segundos.
+    
+    \begin{lstlisting}[language=bash, caption={Despliegue en un comando}]
+docker run -p 6333:6333 qdrant/qdrant
+    \end{lstlisting}
+    
+    \item \textbf{API flexible}: soporte para REST y gRPC permite integración con cualquier stack tecnológico.
+    
+    \item \textbf{Configuración granular}: todos los parámetros de HNSW, WAL y optimizers son ajustables para optimizar según el caso de uso.
+\end{enumerate}
+
+\begin{table}[htbp]
+\caption{Benchmarks comparativos (referencia)}
+\label{tab:benchmarks}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Sistema} & \textbf{QPS (1M vectores)} & \textbf{Latencia p99} \\
+\midrule
+Qdrant & 1500+ & 25ms \\
+Weaviate & 800+ & 45ms \\
+Pinecone (serverless) & 500+ & 60ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{B. Limitaciones}
+
+A pesar de sus fortalezas, Qdrant presenta ciertas limitaciones que deben considerarse:
+
+\begin{enumerate}
+    \item \textbf{No es un motor relacional}: Qdrant no soporta joins, transacciones ACID complejas ni consultas SQL. Es exclusivamente una base de datos vectorial.
+    
+    \item \textbf{Curva de aprendizaje en parámetros HNSW}: la configuración óptima de $m$, $ef\_construct$ y otros parámetros requiere comprensión del algoritmo y experimentación.
+    
     \begin{itemize}
-        \item Ventaja: búsqueda en subconjunto más pequeño
-        \item Desventaja: puede reducir drásticamente el espacio de búsqueda
+        \item $m$ muy bajo: precisión sacrificada
+        \item $m$ muy alto: memoria excesiva
+        \item $ef\_construct$ muy alto: construcción lenta
+        \item $ef\_construct$ muy bajo: calidad del índice comprometida
     \end{itemize}
-    \item \textbf{Post-filter}: aplica condiciones DESPUÉS de búsqueda vectorial
-    \begin{itemize}
-        \item Ventaja: búsqueda completa en todo el espacio
-        \item Desventaja: puede descartar resultados válidos
-    \end{itemize}
-    \item \textbf{Hybrid}: combina ambas estrategias con umbrales adaptativos
+    
+    \item \textbf{Sin UI de administración nativa}: la gestión se realiza mediante API o herramientas de terceros. No existe un dashboard web incorporado.
+    
+    \item \textbf{Escalabilidad manual en self-hosted}: la versión open source no incluye auto-scaling. El operador debe gestionar la capacidad.
+    
+    \item \textbf{Limitado para datos estructurados}: no hay soporte para queries complejas sobre payloads más allá del filtrado básico.
 \end{enumerate}
 
-La estrategia óptima depende de la selectividad del filtro y la distribución de los datos.
+\subsection{C. Comparación con sistemas similares}
 
-% Section: Implementación del Sistema
-\section{Implementación del Sistema RAG}
-\label{sec:implementacion}
+El mercado de bases de datos vectoriales ha crecido significativamente. A continuación se presenta una comparación de Qdrant con alternativas prominentes:
 
-\subsection{Stack Tecnológico}
-El sistema se implementó con las siguientes tecnologías:
+\begin{table}[htbp]
+\caption{Comparación con otros sistemas vectoriales}
+\label{tab:comparison}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Característica} & \textbf{Qdrant} & \textbf{Weaviate} & \textbf{Pinecone} & \textbf{pgvector} \\
+\midrule
+Licencia & Apache 2.0 & BSD & Propietaria & PostgreSQL \\
+Lenguaje & Rust & Go & Rust & C \\
+API REST & \checkmark & \checkmark & \checkmark & \checkmark \\
+gRPC & \checkmark & \checkmark & - & - \\
+Filtrado & \checkmark & \checkmark & \checkmark & \checkmark \\
+HNSW & \checkmark & \checkmark & \checkmark & \checkmark \\
+WAL & \checkmark & Limitado & - & \checkmark \\
+Cloud & Opcional & \checkmark & \checkmark & - \\
+Auto-scale & - & \checkmark & \checkmark & - \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}
 
-\begin{itemize}
-    \item \textbf{Frontend}: Next.js 16 (App Router) + TypeScript + Tailwind CSS
-    \item \textbf{Base de datos vectorial}: Qdrant (ejecutado en Docker)
-    \item \textbf{Modelos de IA}: Ollama con nomic-embed-text (embeddings) y llama3 (LLM)
-    \item \textbf{Servidor}: Node.js 20+ con Next.js API routes
-\end{itemize}
+\textbf{Pinecone}: servicio cloud propietario con excelente escalabilidad pero costo elevado y dependencia de proveedor.
 
-\subsection{Arquitectura de la Aplicación}
-La arquitectura sigue el patrón de una aplicación web con separación de responsabilidades:
+\textbf{Weaviate}: alternativa de código abierto con GraphQL API y módulos ML integrados. Mayor overhead que Qdrant.
 
-\begin{itemize}
-    \item \textbf{Capa de presentación}: componentes React para chat y upload
-    \item \textbf{Capa de API}: Next.js API routes para ingest y query
-    \item \textbf{Capa de negocio}: librerías para chunking y embedding
-    \item \textbf{Capa de datos}: cliente Qdrant y Ollama
-\end{itemize}
+\textbf{pgvector}: extensión de PostgreSQL que permite almacenar vectores en una base de datos existente. Ideal para proyectos que ya usan PostgreSQL pero con limitaciones de rendimiento en comparación con soluciones especializadas.
 
-\subsection{Proceso de Ingesta}
-El proceso de ingesta de documentos comprende:
+\subsection{D. Casos de uso}
 
-\begin{enumerate}
-    \item Recepción del documento (texto o archivo)
-    \item Fragmentación en chunks de aproximadamente 512 tokens
-    \item Generación de embeddings mediante nomic-embed-text
-    \item Inserción de puntos en Qdrant con payload asociado
-    \item Confirmación al cliente
-\end{enumerate}
+Qdrant se utiliza en una amplia variedad de aplicaciones que aprovechan la búsqueda semántica y vectorial:
 
-\begin{lstlisting}[language=typescript, caption={Proceso de ingesta}, label={lst:ingest}]
-async function ingestDocument(text: string, source: string) {
-    // 1. Fragmentar documento
-    const chunks = chunkText(text, { maxTokens: 512, overlap: 50 });
-    
-    // 2. Generar embeddings
-    const embeddings = await Promise.all(
-        chunks.map(chunk => embed(chunk.text))
-    );
-    
-    // 3. Insertar en Qdrant
-    await insertChunks(chunks, embeddings);
-    
-    return { chunks_created: chunks.length };
-}
-\end{lstlisting}
+\subsubsection{Sistemas RAG (Retrieval-Augmented Generation)}
 
-\subsection{Proceso de Consulta}
-El proceso de consulta RAG comprende:
-
-\begin{enumerate}
-    \item Recepción de la pregunta del usuario
-    \item Generación del embedding del query
-    \item Búsqueda de chunks similares en Qdrant
-    \item Construcción del prompt con contexto recuperado
-    \item Generación de respuesta mediante LLM
-    \item Devolución de respuesta con fuentes
-\end{enumerate}
-
-\begin{lstlisting}[language=typescript, caption={Proceso de consulta}, label={lst:query}]
-async function query(question: string) {
-    // 1. Embedding del query
-    const queryVector = await embed(question);
-    
-    // 2. Búsqueda vectorial
-    const sources = await searchChunks(queryVector, top_k=5, threshold=0.4);
-    
-    // 3. Construir prompt
-    const context = sources.map(s => s.text).join('\n\n');
-    const prompt = buildRagPrompt(question, context);
-    
-    // 4. Generar respuesta
-    const answer = await generate(prompt);
-    
-    return { answer, sources };
-}
-\end{lstlisting}
-
-% Section: Resultados
-\section{Resultados y Discusión}
-\label{sec:resultados}
-
-\subsection{Resultados de la Implementación}
-El sistema implementado fue verificado con los siguientes tests:
-
-\begin{enumerate}
-    \item \textbf{Health check}: ambos servicios (Qdrant y Ollama) responden correctamente
-    \item \textbf{Ingesta}: documentos se fragmentan y almacenan exitosamente
-    \item \textbf{Búsqueda}: recuperación de chunks relevantes con scores adecuados
-    \item \textbf{Generación}: respuestas coherentes basadas en el contexto recuperado
-\end{enumerate}
-
-\subsection{Métricas de Rendimiento}
-Basado en las pruebas realizadas:
+El caso de uso más prominente en la actualidad. Qdrant almacena embeddings de documentos, permitiendo que los LLMs consulten conocimiento relevante antes de generar respuestas. Empresas como instance.ai utilizan Qdrant para implementar RAG en producción.
 
 \begin{itemize}
-    \item \textbf{Latencia de embedding}: $\approx$ 500ms para chunks de texto corto
-    \item \textbf{Latencia de búsqueda}: $< 10$ms para colecciones de tamaño moderado
-    \item \textbf{Latencia de generación}: variable según longitud de respuesta
-    \item \textbf{Throughput}: limitado por capacidad del LLM local
+    \item Búsqueda en documentación técnica
+    \item Soporte al cliente basado en knowledge base
+    \item Asistentes virtuales con contexto personalizado
 \end{itemize}
 
-\subsection{Análisis de HNSW}
-La configuración utilizada ($m=16$, $ef\_construct=100$) demostró:
+\subsubsection{Motores de recomendación}
+
+Qdrant permite implementar sistemas de recomendación basados en similitud:
+
 \begin{itemize}
-    \item Búsquedas rápidas incluso en colecciones con miles de puntos
-    \item Buena precisión en la recuperación de chunks relevantes
-    \item Trade-off aceptable entre tiempo de indexación y calidad de resultados
+    \item Recomendación de productos en e-commerce
+    \item Sugerencias de contenido en plataformas de medios
+    \item Playlist generation en aplicaciones de música
 \end{itemize}
 
-\subsection{Análisis del WAL}
-El WAL demostró ser efectivo para:
+El filtrado por payload permite combinar recomendaciones vectoriales con reglas de negocio (categoría, precio, disponibilidad).
+
+\subsubsection{Búsqueda semántica}
+
+Más allá de la búsqueda por palabras clave, Qdrant habilita:
+
 \begin{itemize}
-    \item Garantizar durabilidad de operaciones
-    \item Minimizar latencia de escritura (append-only)
-    \item Permitir recuperación ante fallos
+    \item Búsqueda de imágenes por similitud visual
+    \item Búsqueda de documentos por tema o significado
+    \item Detección de plagio y contenido duplicado
+    \item Clasificación de texto no supervisada
 \end{itemize}
 
-El tamaño de 32MB configurado resulta apropiado para cargas de trabajo moderadas.
+Empresas como Mindsoft utilizan Qdrant para búsqueda semántica en bases de conocimiento empresariales.
 
-% Section: Conclusiones
+\subsubsection{Detección de anomalías y similitud}
+
+La búsqueda por similitud permite identificar patrones inusuales:
+
+\begin{itemize}
+    \item Detección de fraude mediante comparación de transacciones
+    \item Identificación de equipos similares en manufacturing
+    \item Búsqueda de proteínas similares en bioinformatics
+\end{itemize}
+
+% ============================================================
+% V. CONCLUSIONES
+% ============================================================
 \section{Conclusiones}
 \label{sec:conclusiones}
 
-El presente trabajo demostró la viabilidad de implementar un sistema RAG completamente local utilizando tecnologías de código abierto. Las principales conclusiones son:
+\subsection{Análisis del grupo}
 
-\begin{enumerate}
-    \item \textbf{Qdrant como base de datos vectorial}: proporciona una arquitectura robusta que combina rendimiento en búsqueda con garantías de durabilidad mediante WAL y segmentación.
-    
-    \item \textbf{HNSW para indexación}: permite búsquedas aproximadas por vecindad con complejidad sub-lineal, haciendo viable la búsqueda en espacios de alta dimensionalidad.
-    
-    \item \textbf{WAL para durabilidad}: el patrón de logging write-ahead garantiza que ninguna operación se pierda ante fallos del sistema.
-    
-    \item \textbf{mmap para escalabilidad}: el uso de memory mapping permite manejar conjuntos de datos que exceden la memoria RAM disponible.
-    
-    \item \textbf{Filtrado flexible}: la combinación de búsqueda vectorial con filtrado por payload habilita consultas complejas que aprovechan tanto semántica como metadatos.
-    
-    \item \textbf{Ollama para privacidad}: la ejecución local de modelos elimina la dependencia de APIs externas y garantiza la privacidad de los datos.
-\end{enumerate}
+A partir de la experiencia práctica implementando un sistema RAG completo con Qdrant, el grupo ha desarrollado una comprensión profunda de las bases de datos vectoriales y sus aplicaciones en IA generativa.
 
-\subsection{Trabajo Futuro}
-Como líneas de investigación futuras se identifican:
+\subsection{Lo más interesante}
+
+El aspecto más sorprendente de Qdrant fue la implementación del algoritmo HNSW. La combinación de una estructura de grafo jerárquica con búsqueda greedy permite lograr complejidades sub-lineales sin sacrificar excesivamente la precisión. La posibilidad de configurar parámetros como $m$ y $ef\_construct$ para ajustar el trade-off entre velocidad y precisión demuestra la madurez de la solución.
+
+El Write-Ahead Log también resultó más elegante de lo esperado. La combinación de durabilidad con performance (append-only, persistencia asíncrona) es un patrón bien ejecutado que minimiza la latencia de escritura sin comprometer la integridad de los datos.
+
+\subsection{Lo más complejo}
+
+El ajuste de parámetros de HNSW representó el mayor desafío. Encontrar la combinación correcta de $m$, $ef\_construct$, y $ef$ requiere experimentación y comprensión profunda del algoritmo. Un valor incorrecto puede resultar en búsquedas lentas, uso excesivo de memoria, o precisión degradada.
+
+La integración con Ollama también presentó retos, particularmente en la gestión de la latencia de generación de embeddings y respuestas. El procesamiento asíncrono y el manejo de timeouts son aspectos que requieren cuidadosa implementación.
+
+\subsection{Opinión fundamentada sobre Qdrant}
+
+Qdrant demuestra ser una solución robusta y bien diseñada para el almacenamiento y búsqueda de vectores de alta dimensionalidad. Sus principales fortalezas son:
+
 \begin{itemize}
-    \item Experimentación con diferentes configuraciones de HNSW para optimización
-    \item Implementación de re-ranking para mejorar precisión de resultados
-    \item Integración con fuentes de datos externas (PDFs, websites)
-    \item Optimización de chunking para diferentes tipos de documentos
-    \item Implementación de cache de embeddings para reducir latencia
+    \item \textbf{Arquitectura limpia}: la separación entre API, motor de búsqueda, gestor de segmentos y almacenamiento facilita el mantenimiento y la extensión.
+    
+    \item \textbf{Rendimiento consistente}: las pruebas realizadas mostraron latencias predecibles incluso bajo carga concurrente.
+    
+    \item \textbf{Flexibilidad de filtrado}: la capacidad de combinar búsquedas vectoriales con condiciones sobre payloads habilita casos de uso complejos sin necesidad de capas adicionales.
+    
+    \item \textbf{Documentación y comunidad}: la documentación oficial es completa y la comunidad en Discord es receptiva y helpful.
 \end{itemize}
+
+Como limitaciones, señalamos que Qdrant no debe considerarse como un reemplazo de bases de datos relacionales, sino como un complemento especializado para workloads vectoriales. La gestión de una instalación self-hosted requiere conocimiento de Docker, monitoreo y capacidad de planificación de capacidad.
+
+Para proyectos que requieran búsqueda semántica o sistemas RAG, Qdrant representa una opción excelente que combina rendimiento, confiabilidad y código abierto. La decisión entre la versión self-hosted y Qdrant Cloud dependerá del equipo disponible para operaciones y los requisitos de disponibilidad.
+
+En conclusión, Qdrant cumple su promesa de proporcionar una base de datos vectorial de alto rendimiento accesible para equipos de todos los tamaños. Su adopción creciente y la comunidad activa sugieren que continuará evolucionando para satisfacer las demandas de aplicaciones de IA cada vez más sofisticadas.
 
 % References
 \bibliographystyle{IEEEtran}
@@ -685,33 +802,53 @@ Como líneas de investigación futuras se identifican:
 
 % Appendix
 \appendices
-\section{Código Fuente del Cliente Qdrant}
+\section{Código del cliente Qdrant}
 \label{app:qdrant_client}
-\begin{lstlisting}[language=typescript, caption={Cliente Qdrant con fetch nativo}]
-// Qdrant client wrapper using native fetch API
-const QDRANT_URL = `http://${QDRANT_HOST}:${QDRANT_PORT}`;
 
-async function qdrantRequest<T>(path: string, options = {}) {
+\begin{lstlisting}[language=typescript, caption={Cliente Qdrant para sistema RAG}]
+// Qdrant client wrapper using native fetch API
+const QDRANT_URL = `http://${process.env.QDRANT_HOST}:${process.env.QDRANT_PORT}`;
+
+async function qdrantRequest<T>(path: string, options: RequestInit = {}) {
     const response = await fetch(`${QDRANT_URL}${path}`, {
         ...options,
         headers: { 'Content-Type': 'application/json', ...options.headers }
     });
-    if (!response.ok) throw new Error(`Qdrant error ${response.status}`);
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Qdrant error ${response.status}: ${error}`);
+    }
     return response.json();
 }
 
-export async function searchChunks(queryVector, limit = 5, threshold = 0.7) {
-    const result = await qdrantRequest(`/collections/${COLLECTION}/points/search`, {
+// Busqueda de chunks similares
+export async function searchChunks(
+    queryVector: number[],
+    limit: number = 5,
+    scoreThreshold: number = 0.4
+): Promise<Chunk[]> {
+    const result = await qdrantRequest<{
+        result: Array<{ id: string; score: number; payload?: Record<string, unknown> }>;
+    }>(`/collections/rag_collection/points/search`, {
         method: 'POST',
-        body: JSON.stringify({ vector: queryVector, limit, score_threshold: threshold, with_payload: true })
+        body: JSON.stringify({
+            vector: queryVector,
+            limit,
+            score_threshold: scoreThreshold,
+            with_payload: true
+        })
     });
-    return result.result.map(r => r.payload);
+    return result.result.map(r => ({
+        text: r.payload?.text as string || '',
+        source: r.payload?.source as string || '',
+        chunk_id: r.payload?.chunk_id as number || 0
+    }));
 }
 \end{lstlisting}
 
 % Biography
 \begin{IEEEbiography}[{\includegraphics[width=1in,height=1.25in,clip,keepaspectratio]{placeholder.png}}]{Vicenzo Giordano}
-Estudiante de Ingeniería, Universidad. Áreas de interés: bases de datos, sistemas distribuidos, machine learning.
+Estudiante de Ingeniería, Universidad. Áreas de interés: bases de datos, sistemas distribuidos, inteligencia artificial.
 \end{IEEEbiography}
 
 \end{document}
